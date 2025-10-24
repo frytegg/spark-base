@@ -1,0 +1,38 @@
+{
+  "name": "@spark/api",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "lint": "echo \"no lint configured\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev"
+  },
+  "dependencies": {
+    "@farcaster/quick-auth": "^0.0.8",
+    "@fastify/cors": "^8.0.0",
+    "@fastify/helmet": "^11.0.0",
+    "@fastify/websocket": "^7.2.0",
+    "@spark/shared": "workspace:*",
+    "abitype": "^1.1.1",
+    "dotenv": "^17.2.3",
+    "fastify": "^4.28.1",
+    "ioredis": "^5.8.2",
+    "pino": "^10.1.0",
+    "pino-pretty": "^13.1.2",
+    "ulid": "^2.3.0",
+    "viem": "^2.38.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@prisma/client": "^6.18.0",
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.18.1",
+    "prisma": "^6.18.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.4.0"
+  }
+}

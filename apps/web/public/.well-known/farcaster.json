@@ -1,0 +1,20 @@
+{
+  "accountAssociation": {
+    "header": "",
+    "payload": "",
+    "signature": ""
+  },
+  "miniapp": {
+    "version": "1",
+    "name": "Spark",
+    "subtitle": "Onchain PvP",
+    "description": "Stake ARK and play. XP, badges, leaderboards.",
+    "iconUrl": "https://<your-domain>/icons/icon.png",
+    "splashImageUrl": "https://<your-domain>/images/hero.png",
+    "screenshotUrls": ["https://<your-domain>/images/screen1.png"],
+    "developer": { "name": "Your Team", "url": "https://<your-site>" },
+    "websiteUrl": "https://<your-domain>",
+    "termsUrl": "https://<your-domain>/terms",
+    "privacyPolicyUrl": "https://<your-domain>/privacy"
+  }
+}

@@ -31,7 +31,12 @@
  * ============================================================================
  */
 
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useState, ReactNode, useEffect } from "react";
+import { useAccount, useWatchContractEvent } from "wagmi";
+import { useArkBalance } from "../lib/hooks";
+import { formatUnits } from "viem";
+import { claimFaucet } from "../lib/faucet";
+import { ABI, ADDR } from "../lib/contracts";
 
 interface WalletContextType {
   // Connection state
@@ -43,52 +48,103 @@ interface WalletContextType {
   xp: number; // {{user_xp_points}} - Fetch from backend/contract
   nickname: string; // {{user_nickname}} - Fetch from backend
   
+  // Faucet state
+  isFaucetLoading: boolean;
+  faucetError: string | null;
+  
   // Actions
   connectWallet: () => void; // TODO: Replace with Web3 wallet connection
   disconnectWallet: () => void;
-  claimTestTokens: () => void; // TODO: Call smart contract method
+  claimTestTokens: () => Promise<void>; // Calls backend faucet API
   addXP: (amount: number) => void; // TODO: Update backend and blockchain
   setNickname: (name: string) => void; // TODO: Save to backend
+  refreshArkBalance: () => Promise<void>;
 }
 
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  // MOCK STATE - Replace with real Web3 state
-  const [isConnected, setIsConnected] = useState(false);
-  const [walletAddress, setWalletAddress] = useState("");
-  const [arkBalance, setArkBalance] = useState(0);
+  // Real Web3 state via wagmi
+  const { address, isConnected } = useAccount();
+  const { balance: arkBalanceRaw, refetch: refetchBalance } = useArkBalance();
+  
+  // MOCK STATE - Replace with real backend data
   const [xp, setXP] = useState(0);
   const [nickname, setNicknameState] = useState("Player");
+  
+  // Faucet state
+  const [isFaucetLoading, setIsFaucetLoading] = useState(false);
+  const [faucetError, setFaucetError] = useState<string | null>(null);
+  
+  // Convert ARK balance from bigint (wei) to number with 2 decimals
+  const arkBalance = arkBalanceRaw 
+    ? Math.floor(Number(formatUnits(arkBalanceRaw, 18)) * 100) / 100
+    : 0;
+
+  /**
+   * Fetch user profile from backend when wallet connects
+   */
+  useEffect(() => {
+    const fetchUserProfile = async () => {
+      if (!address) {
+        // Reset profile data when disconnected
+        setXP(0);
+        setNicknameState("Player");
+        return;
+      }
+
+      const API = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
+      
+      try {
+        const response = await fetch(`${API}/api/user/profile?wallet=${address}`);
+        
+        if (response.ok) {
+          const profile = await response.json();
+          
+          // Update state with profile data
+          if (profile.xp !== undefined) {
+            setXP(profile.xp);
+          }
+          if (profile.nickname) {
+            setNicknameState(profile.nickname);
+          }
+          
+          console.log("User profile loaded:", profile);
+        } else {
+          console.log("No profile found for user, using defaults");
+        }
+      } catch (error) {
+        console.error("Error fetching user profile:", error);
+        // Keep default values on error
+      }
+    };
+
+    fetchUserProfile();
+  }, [address]);
 
   /**
    * Connect wallet
-   * TODO: Replace with actual Web3 wallet connection
-   * Example with ethers.js:
-   * ```
-   * const provider = new ethers.providers.Web3Provider(window.ethereum);
-   * const accounts = await provider.send("eth_requestAccounts", []);
-   * setWalletAddress(accounts[0]);
-   * ```
+   * Now handled by wagmi hooks - wallet connection happens via injected connector
+   * This function is kept for backward compatibility but wagmi handles the actual connection
    */
   const connectWallet = () => {
-    // MOCK: Generate fake wallet address
-    setIsConnected(true);
-    setWalletAddress("0x7ef8a9b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8");
+    // Connection is now handled by wagmi's useConnect hook
+    // Components should use wagmi's connect functionality directly
+    console.log("Use wagmi's useConnect hook for wallet connection");
     
     // TODO: After real wallet connection:
-    // 1. Fetch ARK balance from blockchain
+    // 1. ARK balance - now fetched via useArkBalance() hook ✓
     // 2. Fetch user XP from backend/contract
     // 3. Fetch user profile (nickname, avatar) from backend
   };
 
   /**
    * Disconnect wallet
+   * Now handled by wagmi hooks
    */
   const disconnectWallet = () => {
-    setIsConnected(false);
-    setWalletAddress("");
-    setArkBalance(0);
+    // Disconnection is now handled by wagmi's useDisconnect hook
+    // Reset local state only
     setXP(0);
     setNicknameState("Player");
   };
@@ -103,20 +159,64 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   };
 
   /**
-   * Claim test tokens
-   * TODO: Call smart contract faucet method
-   * Example:
-   * ```
-   * const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
-   * await contract.claimTestTokens();
-   * ```
+   * Claim test tokens from faucet
+   * Calls backend API to mint tokens to user's wallet
    */
-  const claimTestTokens = () => {
-    // MOCK: Add 50 tokens locally
-    setArkBalance((prev) => prev + 50);
-    
-    // TODO: Call actual smart contract or backend endpoint
+  const claimTestTokens = async () => {
+    if (!address) {
+      console.error("No wallet connected");
+      setFaucetError("Please connect your wallet first");
+      return;
+    }
+
+    setIsFaucetLoading(true);
+    setFaucetError(null);
+
+    try {
+      const result = await claimFaucet(address);
+
+      if (result.success) {
+        console.log("Faucet claim successful:", result.txHash);
+        // Wait a bit for the transaction to be mined, then refetch balance
+        setTimeout(() => {
+          refetchBalance();
+        }, 2000);
+      } else {
+        console.error("Faucet claim failed:", result.reason);
+        setFaucetError(result.reason || "Failed to claim tokens");
+      }
+    } catch (error) {
+      console.error("Error claiming faucet:", error);
+      setFaucetError(error instanceof Error ? error.message : "Unknown error occurred");
+    } finally {
+      setIsFaucetLoading(false);
+    }
   };
+
+  /** Manually refresh ARK balance from chain */
+  const refreshArkBalance = async () => {
+    try { await refetchBalance(); } catch (e) { console.warn("Refetch ARK failed", e); }
+  };
+
+  // Auto-refresh ARK balance on Transfer events involving the user
+  useWatchContractEvent({
+    address: ADDR.ARK,
+    abi: ABI.ARK as any,
+    eventName: "Transfer",
+    // when user receives tokens
+    args: address ? { to: address } as any : undefined,
+    enabled: !!address,
+    onLogs: () => { void refetchBalance(); }
+  });
+  useWatchContractEvent({
+    address: ADDR.ARK,
+    abi: ABI.ARK as any,
+    eventName: "Transfer",
+    // when user sends tokens
+    args: address ? { from: address } as any : undefined,
+    enabled: !!address,
+    onLogs: () => { void refetchBalance(); }
+  });
 
   /**
    * Add XP to user
@@ -133,15 +233,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     <WalletContext.Provider
       value={{
         isConnected,
-        walletAddress,
+        walletAddress: address || "",
         arkBalance,
         xp,
         nickname,
+        isFaucetLoading,
+        faucetError,
         connectWallet,
         disconnectWallet,
         claimTestTokens,
         addXP,
         setNickname,
+        refreshArkBalance,
       }}
     >
       {children}

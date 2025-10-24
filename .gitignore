@@ -1,0 +1,35 @@
+# Node/PNPM
+node_modules/
+.pnpm-store/
+pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+apps/web/build/
+apps/web/dist/
+apps/api/dist/
+
+# Environment files
+.env
+.env.*
+apps/**/.env
+packages/**/.env
+
+# Local/Editor
+.vercel
+.vscode/
+.DS_Store
+
+# Misc
+coverage/
+*.local
+
+node_modules
+dist
+.env
+.env.*
+pnpm-lock.yaml
+.DS_Store

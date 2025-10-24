@@ -1,21 +1,10 @@
 import { useState } from "react";
-import { Wallet, Coins, Trophy, CheckCircle2, Gift, LogOut, Menu, Home, User, X } from "lucide-react";
+import { Coins, Trophy, Gift, Menu, Home, User, X } from "lucide-react";
 import { Button } from "./ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "./ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "./ui/sheet";
+import { Sheet, SheetContent, SheetTrigger } from "./ui/sheet";
 import { useWallet } from "../context/WalletContext";
-import { toast } from "sonner@2.0.3";
+import { ConnectButton } from "./ConnectButton";
 
 interface HeaderProps {
   onNavigate: (screen: string) => void;
@@ -23,37 +12,17 @@ interface HeaderProps {
 }
 
 export function Header({ onNavigate, currentScreen }: HeaderProps) {
-  const { isConnected, walletAddress, arkBalance, connectWallet, disconnectWallet, claimTestTokens } = useWallet();
-  const [showConnectedDialog, setShowConnectedDialog] = useState(false);
-  const [showDisconnectDialog, setShowDisconnectDialog] = useState(false);
+  const { isConnected, arkBalance, claimTestTokens, isFaucetLoading } = useWallet();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const formatWalletAddress = (address: string) => {
-    if (!address) return "";
-    return `${address.slice(0, 6)}……${address.slice(-3)}`;
-  };
-
-  const handleConnectWallet = () => {
-    connectWallet();
-    setShowConnectedDialog(true);
-    setTimeout(() => setShowConnectedDialog(false), 2000);
-  };
-
-  const handleClaimTokens = () => {
-    claimTestTokens();
-    toast.success("Successfully claimed 50 test ARK tokens!");
-  };
-
-  const handleDisconnect = () => {
-    disconnectWallet();
-    setShowDisconnectDialog(false);
-    toast.success("Wallet disconnected");
-    onNavigate("landing");
+  const handleClaimTokens = async () => {
+    await claimTestTokens();
+    console.log("Test tokens claimed");
   };
 
   const handleProfileClick = () => {
     if (!isConnected) {
-      toast.error("Please connect your wallet first!");
+      console.error("Please connect your wallet first!");
       return;
     }
     setMobileMenuOpen(false);
@@ -133,10 +102,11 @@ export function Header({ onNavigate, currentScreen }: HeaderProps) {
                             handleClaimTokens();
                             setMobileMenuOpen(false);
                           }}
+                          disabled={isFaucetLoading}
                           className="w-full bg-gradient-to-r from-accent to-secondary hover:from-accent/90 hover:to-secondary/90 pixel-text text-xs"
                         >
                           <Gift className="w-4 h-4 mr-2" />
-                          Claim 50 Test ARK
+                          {isFaucetLoading ? "Claiming..." : "Claim 10 Test ARK"}
                         </Button>
                       </div>
                     )}
@@ -222,10 +192,11 @@ export function Header({ onNavigate, currentScreen }: HeaderProps) {
                       </div>
                       <Button
                         onClick={handleClaimTokens}
+                        disabled={isFaucetLoading}
                         className="w-full bg-gradient-to-r from-accent to-secondary hover:from-accent/90 hover:to-secondary/90 pixel-text text-xs"
                       >
                         <Gift className="w-4 h-4 mr-2" />
-                        Claim 50 Test ARK
+                        {isFaucetLoading ? "Claiming..." : "Claim 10 Test ARK"}
                       </Button>
                     </div>
                   </PopoverContent>
@@ -239,78 +210,12 @@ export function Header({ onNavigate, currentScreen }: HeaderProps) {
                 </div>
               )}
               
-              {isConnected ? (
-                <Button 
-                  onClick={() => setShowDisconnectDialog(true)}
-                  className="bg-gradient-to-r from-green-600 to-green-500 hover:from-green-600/90 hover:to-green-500/90 pixel-text text-xs h-9 md:h-10 px-3 md:px-4"
-                >
-                  <CheckCircle2 className="w-3 h-3 mr-1 md:mr-2" />
-                  <span className="hidden sm:inline">{formatWalletAddress(walletAddress)}</span>
-                  <span className="sm:hidden">{walletAddress.slice(0, 4)}...{walletAddress.slice(-2)}</span>
-                </Button>
-              ) : (
-                <Button 
-                  onClick={handleConnectWallet}
-                  className="bg-gradient-to-r from-primary via-secondary to-accent hover:from-primary/90 hover:via-secondary/90 hover:to-accent/90 pixel-text text-xs h-9 md:h-10 px-2.5 md:px-4"
-                >
-                  <Wallet className="w-3 h-3 mr-1 md:mr-2" />
-                  CONNECT
-                </Button>
-              )}
+              <ConnectButton />
             </div>
           </div>
         </div>
       </header>
     </div>
-
-      {/* Connected Wallet Dialog */}
-      <Dialog open={showConnectedDialog} onOpenChange={setShowConnectedDialog}>
-        <DialogContent className="border border-green-500/30 bg-card/95 backdrop-blur-xl max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="text-center">
-              <div className="flex flex-col items-center gap-5 py-6">
-                <div className="w-16 h-16 rounded-full bg-gradient-to-br from-green-500 to-green-600 flex items-center justify-center">
-                  <CheckCircle2 className="w-8 h-8 text-white" />
-                </div>
-                <div>
-                  <h3 className="pixel-text text-sm text-green-500 mb-2">
-                    Wallet Connected!
-                  </h3>
-                  <p className="text-xs text-muted-foreground">
-                    You're all set to start playing
-                  </p>
-                </div>
-              </div>
-            </DialogTitle>
-          </DialogHeader>
-        </DialogContent>
-      </Dialog>
-
-      {/* Disconnect Wallet Dialog */}
-      <AlertDialog open={showDisconnectDialog} onOpenChange={setShowDisconnectDialog}>
-        <AlertDialogContent className="border border-primary/30 bg-card/95 backdrop-blur-xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="pixel-text">
-              Disconnect Wallet?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to disconnect your wallet? You'll need to reconnect to play games and access your profile.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="pixel-text text-xs">
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction 
-              onClick={handleDisconnect}
-              className="bg-destructive hover:bg-destructive/90 pixel-text text-xs"
-            >
-              <LogOut className="w-3 h-3 mr-2" />
-              Disconnect
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </>
   );
 }

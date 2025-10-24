@@ -16,24 +16,6 @@ import { Game } from "../types";
  */
 export const GAMES: Game[] = [
   {
-    id: "chess",
-    name: "Chess",
-    icon: "♟️",
-    mode: "Staked",
-    arkReward: 50, // Backend: Fetch from smart contract reward pool
-    nftReward: "Grandmaster Badge",
-    difficulty: "Hard",
-    players: 0, // Backend: Replace with {{active_players_count}}
-    illustration: "chess",
-    rules: [
-      "Standard chess rules apply",
-      "Checkmate your opponent's king to win",
-      "30 seconds per move - timeout = automatic loss",
-      "Stalemate or draw by repetition ends in a draw",
-      "Practice mode available to learn strategies"
-    ]
-  },
-  {
     id: "tictactoe",
     name: "Tic-Tac-Toe",
     icon: "⭕",

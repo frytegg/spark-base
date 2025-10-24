@@ -51,7 +51,7 @@
  * ============================================================================
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -61,9 +61,9 @@ import { Input } from "../components/ui/input";
 import { Coins, Trophy, Award, Zap, Lock, TrendingUp, Edit2, X, Check } from "lucide-react";
 import { getTierFromXP } from "../types";
 import { useWallet } from "../context/WalletContext";
+import { useAccount } from "wagmi";
 import { PixelAvatar } from "../components/PixelAvatar";
 import { PixelNFTBadge } from "../components/PixelNFTBadge";
-import { toast } from "sonner@2.0.3";
 
 interface ProfilePageProps {
   onNavigate: (screen: string, data?: any) => void;
@@ -79,9 +79,49 @@ const nftBadgesData = [
 
 export function ProfilePage({ onNavigate }: ProfilePageProps) {
   const { arkBalance, xp, nickname, setNickname } = useWallet();
+  const { address } = useAccount();
   const currentTier = getTierFromXP(xp);
   const [isEditingNickname, setIsEditingNickname] = useState(false);
   const [tempNickname, setTempNickname] = useState(nickname);
+  const [recentGames, setRecentGames] = useState<Array<{
+    game: string;
+    result: "Win" | "Loss" | "Draw";
+    arkEarned: number;
+    date: string;
+  }>>([]);
+  const [isLoadingGames, setIsLoadingGames] = useState(false);
+  const [stats, setStats] = useState<{ gamesPlayed: number; gamesWon: number; winRate: number }>({ gamesPlayed: 0, gamesWon: 0, winRate: 0 });
+  const [totalEarned, setTotalEarned] = useState<number>(0);
+
+  const API = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
+
+  // Fetch user profile (stats, total earned) and match history
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!address) return;
+      
+      setIsLoadingGames(true);
+      try {
+        const profileRes = await fetch(`${API}/api/user/profile?wallet=${address}`);
+        if (profileRes.ok) {
+          const profile = await profileRes.json();
+          if (profile?.stats) setStats(profile.stats);
+          if (typeof profile?.totalArkEarned === "number") setTotalEarned(profile.totalArkEarned);
+        }
+        const response = await fetch(`${API}/api/user/match-history?wallet=${address}&limit=10`);
+        if (response.ok) {
+          const data = await response.json();
+          setRecentGames(data);
+        }
+      } catch (error) {
+        console.error("Error fetching match history:", error);
+      } finally {
+        setIsLoadingGames(false);
+      }
+    };
+
+    fetchData();
+  }, [address, API]);
   
   // Update locked status based on XP
   // Backend: Fetch actual badge unlock status from API
@@ -115,25 +155,37 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
    * Save nickname
    * Backend: PUT /api/user/profile with { nickname }
    */
-  const handleSaveNickname = () => {
+  const handleSaveNickname = async () => {
     const trimmedNickname = tempNickname.trim();
     if (trimmedNickname.length < 3) {
-      toast.error("Nickname must be at least 3 characters long");
+      console.error("Nickname must be at least 3 characters long");
       return;
     }
     if (trimmedNickname.length > 20) {
-      toast.error("Nickname must be 20 characters or less");
+      console.error("Nickname must be 20 characters or less");
       return;
     }
+    
+    // Update local state
     setNickname(trimmedNickname);
     setIsEditingNickname(false);
-    toast.success("Nickname updated successfully!");
+    console.log("Nickname updated successfully!");
     
-    // TODO: Save to backend
-    // await fetch('/api/user/profile', {
-    //   method: 'PUT',
-    //   body: JSON.stringify({ nickname: trimmedNickname })
-    // });
+    // Save to backend
+    if (address) {
+      try {
+        await fetch(`${API}/api/user/profile`, {
+          method: 'PUT',
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ 
+            wallet: address,
+            nickname: trimmedNickname 
+          })
+        });
+      } catch (error) {
+        console.error("Failed to save nickname:", error);
+      }
+    }
   };
 
   const handleCancelEdit = () => {
@@ -141,19 +193,8 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
     setIsEditingNickname(false);
   };
 
-  // PLACEHOLDER: Recent games - Replace with API call
-  // Backend: GET /api/user/match-history?limit=10
-  const recentGames: Array<{
-    game: string; // {{game_name}}
-    result: "Win" | "Loss" | "Draw"; // {{match_result}}
-    ark: number; // {{ark_earned}}
-    date: string; // {{relative_time}}
-  }> = [];
-
-  // PLACEHOLDER: User stats - Replace with API call
-  const gamesPlayed = 0; // {{total_games_played}}
-  const gamesWon = 0; // {{total_games_won}}
-  const winRate = gamesPlayed > 0 ? Math.round((gamesWon / gamesPlayed) * 100) : 0;
+  // Stats provided by backend
+  const { gamesPlayed, gamesWon, winRate } = stats;
 
   return (
     <div className="min-h-screen py-8 md:py-16">
@@ -282,12 +323,13 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
                   {updatedNFTBadges.map((badge) => (
                     <div key={badge.id} className="text-center">
-                      <PixelNFTBadge
-                        tier={badge.tier}
-                        locked={badge.locked}
-                        size={100}
-                        className="mx-auto mb-2 md:mb-3"
-                      />
+                      <div className="mx-auto mb-2 md:mb-3">
+                        <PixelNFTBadge
+                          tier={badge.tier}
+                          locked={badge.locked}
+                          size={100}
+                        />
+                      </div>
                       <h3 className="pixel-text text-xs md:text-sm mb-1">{badge.name}</h3>
                       {badge.locked ? (
                         <div className="flex items-center justify-center gap-1 text-xs text-muted-foreground">
@@ -352,10 +394,7 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-xs md:text-sm text-muted-foreground">Total Earned</span>
-                      <span className="pixel-text text-sm md:text-base text-accent">
-                        {arkBalance}
-                        {/* Backend: Track total earned separately */}
-                      </span>
+                      <span className="pixel-text text-sm md:text-base text-accent">{totalEarned}</span>
                     </div>
                   </div>
                 </Card>
@@ -390,7 +429,7 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                           <Trophy className="w-4 h-4 md:w-5 md:h-5 text-primary" />
                           <div>
                             <h3 className="pixel-text text-xs md:text-sm">{game.game}</h3>
-                            <p className="text-xs text-muted-foreground">{game.date}</p>
+                            <p className="text-xs text-muted-foreground">{new Date(game.date).toLocaleString()}</p>
                           </div>
                         </div>
                         <div className="text-right">
@@ -405,7 +444,7 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                           >
                             {game.result}
                           </Badge>
-                          <p className="text-xs text-accent">+{game.ark} ARK</p>
+                          <p className="text-xs text-accent">{game.arkEarned >= 0 ? "+" : ""}{game.arkEarned} ARK</p>
                         </div>
                       </div>
                     ))}

@@ -72,17 +72,34 @@ import { Coins, Trophy, Clock, RotateCcw, Home, PartyPopper, Zap } from "lucide-
 import { Game, calculateXPChange } from "../types";
 import { motion, AnimatePresence } from "motion/react";
 import { useWallet } from "../context/WalletContext";
-import { toast } from "sonner@2.0.3";
+import { useAccount } from "wagmi";
+import { GameWebSocketClient, createGameClient, submitMatchResult } from "../lib/gameClient";
 
 interface GamePageProps {
   game: Game;
   stakeAmount: number;
   playMode: "free" | "stake";
   onNavigate: (screen: string, data?: any) => void;
+  matchId?: string;
+  escrowId?: string;
+  opponentWallet?: string;
+  role?: "p1" | "p2";
+  opponentType?: "player" | "ai";
 }
 
-export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePageProps) {
-  const { xp, addXP } = useWallet();
+export function GamePage({ 
+  game, 
+  stakeAmount, 
+  playMode, 
+  onNavigate,
+  matchId,
+  escrowId,
+  opponentWallet,
+  role,
+  opponentType = "ai"
+}: GamePageProps) {
+  const { xp, addXP, refreshArkBalance } = useWallet();
+  const { address } = useAccount();
   const [turnTime, setTurnTime] = useState(30); // 30 seconds per turn
   const [gameState, setGameState] = useState<"playing" | "finished">("playing");
   const [winner, setWinner] = useState<"player" | "opponent" | "draw" | null>(null);
@@ -91,6 +108,17 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
   const [opponentXP, setOpponentXP] = useState(800); // {{opponent_xp}}
   const [opponentName, setOpponentName] = useState("Opponent"); // {{opponent_name}}
   const [showExitDialog, setShowExitDialog] = useState(false);
+  const [gameClient, setGameClient] = useState<GameWebSocketClient | null>(null);
+  const [gameStartTime] = useState(Date.now());
+  const [started, setStarted] = useState(opponentType !== "player");
+  const [pendingWinnerSide, setPendingWinnerSide] = useState<"a"|"b"|null>(null);
+
+  // Multiplayer side and role mapping
+  const [side, setSide] = useState<"a" | "b" | null>(null);
+  const playerSymbol: "X" | "O" = side ? (side === "a" ? "X" : "O") : (role === "p2" ? "O" : "X");
+  const opponentSymbol: "X" | "O" = playerSymbol === "X" ? "O" : "X";
+  const playerColor: "red" | "yellow" = side ? (side === "a" ? "red" : "yellow") : (role === "p2" ? "yellow" : "red");
+  const opponentColor: "red" | "yellow" = playerColor === "red" ? "yellow" : "red";
 
   // Tic Tac Toe state with move history (for 3-piece limit)
   const [tttBoard, setTttBoard] = useState<(string | null)[]>(Array(9).fill(null));
@@ -119,17 +147,218 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
   const [rpsRoundResult, setRpsRoundResult] = useState<"win" | "lose" | "draw" | null>(null);
   const [rpsRevealing, setRpsRevealing] = useState(false);
   const [rpsWaitingForOpponent, setRpsWaitingForOpponent] = useState(false);
+  const [pendingRpsReveal, setPendingRpsReveal] = useState<{
+    round: number;
+    aChoice: "rock" | "paper" | "scissors";
+    bChoice: "rock" | "paper" | "scissors";
+    winnerSide: "a" | "b" | null;
+  } | null>(null);
 
   /**
    * Initialize opponent data
    * Backend: Fetch from matchmaking result
    */
   useEffect(() => {
-    // TODO: Get opponent data from props or WebSocket
-    // const { opponentId, opponentName, opponentXP } = matchData;
-    setOpponentName("AI Opponent"); // Placeholder
-    setOpponentXP(800); // Placeholder
-  }, []);
+    // Set opponent name based on type
+    if (opponentType === "ai") {
+      setOpponentName("AI Opponent");
+      setOpponentXP(800);
+    } else if (opponentWallet) {
+      setOpponentName(opponentWallet.substring(0, 6) + "..." + opponentWallet.substring(38));
+      setOpponentXP(800); // TODO: Fetch from backend
+    }
+  }, [opponentType, opponentWallet]);
+
+  /**
+   * Initialize WebSocket connection for multiplayer games
+   */
+  useEffect(() => {
+    // Only connect WebSocket for multiplayer matches
+    if (opponentType !== "player" || !matchId) {
+      return;
+    }
+
+    const client = createGameClient(matchId, {
+      onOpponentMove: (move) => {
+        console.log("Opponent moved:", move);
+        // Apply opponent's move based on game type
+        if (game.name === "Tic-Tac-Toe") {
+          // State is authoritative for TTT; rely on onState to update board/turn.
+          // Only sync timer from this event if provided.
+          if (move.timestamp) {
+            const elapsed = Math.floor((Date.now() - new Date(move.timestamp).getTime()) / 1000);
+            setTurnTime(Math.max(0, 30 - elapsed));
+          }
+        } else if (game.name === "Connect Four") {
+          // C4 is fully server-authoritative; ignore local opponent_move and wait for state
+          if (move.timestamp) {
+            const elapsed = Math.floor((Date.now() - new Date(move.timestamp).getTime()) / 1000);
+            setTurnTime(Math.max(0, 30 - elapsed));
+          }
+        } else if (game.name === "Rock Paper Scissors") {
+          // RPS moves handled differently
+          console.log("RPS opponent move:", move);
+        }
+      },
+      onGameEnd: (data) => {
+        console.log("Game ended from server:", data);
+        // Handle game end from server
+        if (data.isDraw) {
+          handleGameEnd("draw");
+        } else if (data.winnerSide) {
+          if (side) {
+            handleGameEnd(data.winnerSide === side ? "player" : "opponent");
+          } else {
+            // Buffer until we know our side (e.g., if start arrives slightly later)
+            setPendingWinnerSide(data.winnerSide);
+          }
+        } else if (data.winner === address) {
+          handleGameEnd("player");
+        } else {
+          handleGameEnd("opponent");
+        }
+      },
+      onStart: (data) => {
+        console.log("Game start:", data);
+        // Record our assigned side for symbol/color mapping
+        if (data.side === "a" || data.side === "b") setSide(data.side);
+        // Set turn based on who starts per server (a => X/red, b => O/yellow)
+        setTttCurrentPlayer(data.current === "a" ? "X" : "O");
+        setC4CurrentPlayer(data.current === "a" ? "red" : "yellow");
+        setStarted(true);
+        if (data.startAt) {
+          const elapsed = Math.floor((Date.now() - data.startAt) / 1000);
+          setTurnTime(Math.max(0, 30 - elapsed));
+        } else {
+          resetTurnTimer();
+        }
+      },
+      onState: (data) => {
+        // Full authoritative state from server
+        if (game.name === "Tic-Tac-Toe") {
+          const srvBoard = data.board as ("X"|"O"|null)[];
+          setTttBoard(srvBoard);
+          // Derive move histories for animations (optional, no fade when syncing)
+          const pMoves: number[] = [];
+          const oMoves: number[] = [];
+          srvBoard.forEach((v, i) => {
+            if (v === playerSymbol) pMoves.push(i);
+            if (v === opponentSymbol) oMoves.push(i);
+          });
+          setPlayerMoves(pMoves.sort());
+          setOpponentMoves(oMoves.sort());
+          setFadingCell(null);
+          // Current turn from server side mapping
+          setTttCurrentPlayer(data.current === "a" ? "X" : "O");
+        } else if (game.name === "Connect Four") {
+          const srvBoard = data.board as ("red"|"yellow"|null)[];
+          setC4Board(srvBoard);
+          setC4DroppingToken(null);
+          setC4CurrentPlayer(data.current === "a" ? "red" : "yellow");
+        }
+        // Timer sync from server timestamp for any board game
+        if (data.timestamp) {
+          const elapsed = Math.floor((Date.now() - data.timestamp) / 1000);
+          setTurnTime(Math.max(0, 30 - elapsed));
+        }
+        setStarted(true);
+      },
+      onRpsReveal: (data) => {
+        if (game.name !== "Rock Paper Scissors") return;
+        // Map choices by our side
+        const mySide = side;
+        if (!mySide) { setPendingRpsReveal(data); return; }
+        const myChoice = mySide === "a" ? data.aChoice : data.bChoice;
+        const oppChoice = mySide === "a" ? data.bChoice : data.aChoice;
+        setRpsPlayerChoice(myChoice);
+        setRpsOpponentChoice(oppChoice);
+        setRpsRevealing(true);
+        setRpsWaitingForOpponent(false);
+        // Determine round result from winnerSide
+        let result: "win" | "lose" | "draw" = "draw";
+        if (data.winnerSide === null) result = "draw";
+        else if (data.winnerSide === mySide) result = "win";
+        else result = "lose";
+        setTimeout(() => {
+          setRpsRoundResult(result);
+          // Update local scores to reflect server outcome
+          if (result === "win") setRpsPlayerScore((s) => s + 1);
+          else if (result === "lose") setRpsOpponentScore((s) => s + 1);
+          // After short delay, either proceed to next round or wait for game_end
+          setTimeout(() => {
+            setRpsCurrentRound((r) => r + 1);
+            setRpsPlayerChoice(null);
+            setRpsOpponentChoice(null);
+            setRpsRoundResult(null);
+            setRpsRevealing(false);
+            setRpsWaitingForOpponent(false);
+            resetTurnTimer();
+          }, 1500);
+        }, 800);
+      },
+      onError: (error) => {
+        console.error("Game WebSocket error:", error);
+      },
+      onOpen: () => {
+        console.log("Game WebSocket connected");
+      },
+      onClose: () => {
+        console.log("Game WebSocket disconnected");
+      }
+    });
+
+    // Connect the WebSocket
+    client.connect().catch((error) => {
+      console.error("Failed to connect game WebSocket:", error);
+    });
+
+    setGameClient(client);
+
+    // Cleanup on unmount
+    return () => {
+      client.close();
+    };
+  }, [matchId, opponentType, address, game.name]);
+
+  // If we received a winnerSide before we knew our side, resolve once side becomes available
+  useEffect(() => {
+    if (gameState === "playing" && pendingWinnerSide && side) {
+      handleGameEnd(pendingWinnerSide === side ? "player" : "opponent");
+      setPendingWinnerSide(null);
+    }
+  }, [pendingWinnerSide, side, gameState]);
+
+  // If we received an RPS reveal before we knew our side, process it now
+  useEffect(() => {
+    if (game.name !== "Rock Paper Scissors") return;
+    if (!side || !pendingRpsReveal || gameState !== "playing") return;
+    const data = pendingRpsReveal;
+    const myChoice = side === "a" ? data.aChoice : data.bChoice;
+    const oppChoice = side === "a" ? data.bChoice : data.aChoice;
+    setRpsPlayerChoice(myChoice);
+    setRpsOpponentChoice(oppChoice);
+    setRpsRevealing(true);
+    setRpsWaitingForOpponent(false);
+    let result: "win" | "lose" | "draw" = "draw";
+    if (data.winnerSide === null) result = "draw";
+    else if (data.winnerSide === side) result = "win";
+    else result = "lose";
+    setTimeout(() => {
+      setRpsRoundResult(result);
+      if (result === "win") setRpsPlayerScore((s) => s + 1);
+      else if (result === "lose") setRpsOpponentScore((s) => s + 1);
+      setTimeout(() => {
+        setRpsCurrentRound((r) => r + 1);
+        setRpsPlayerChoice(null);
+        setRpsOpponentChoice(null);
+        setRpsRoundResult(null);
+        setRpsRevealing(false);
+        setRpsWaitingForOpponent(false);
+        resetTurnTimer();
+      }, 1500);
+    }, 800);
+    setPendingRpsReveal(null);
+  }, [pendingRpsReveal, side, gameState, game.name]);
 
   /**
    * Turn-based timer (30 seconds per turn)
@@ -183,7 +412,7 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
    * Handle game end
    * Backend: Submit result to server, update blockchain if staked
    */
-  const handleGameEnd = (gameWinner: "player" | "opponent" | "draw") => {
+  const handleGameEnd = async (gameWinner: "player" | "opponent" | "draw") => {
     setWinner(gameWinner);
     setGameState("finished");
 
@@ -202,16 +431,100 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
       setEarnedARK(0);
     }
 
-    // TODO: Submit match result to backend
-    // await fetch('/api/match/result', {
-    //   method: 'POST',
-    //   body: JSON.stringify({
-    //     matchId,
-    //     winner: won ? userId : opponentId,
-    //     arkTransferred: arkReward,
-    //     xpChanges: { [userId]: xpChange }
-    //   })
-    // });
+    // Submit match result to backend for multiplayer games
+    if (matchId && opponentType === "player" && address && opponentWallet) {
+      const apiUrl = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
+      const durationSec = Math.floor((Date.now() - gameStartTime) / 1000);
+      const won = gameWinner === "player";
+      
+      try {
+        await submitMatchResult(
+          apiUrl,
+          matchId,
+          won ? address : (gameWinner === "draw" ? null : opponentWallet),
+          won ? opponentWallet : (gameWinner === "draw" ? null : address),
+          won ? "win" : (gameWinner === "draw" ? "draw" : "loss"),
+          durationSec
+        );
+        console.log("Match result submitted successfully");
+        // After backend settles escrow, refresh ARK balance a few times to catch up
+        // small retry loop as RPC/indexers can be eventually consistent
+        const retries = 3;
+        for (let i = 0; i < retries; i++) {
+          await new Promise(r => setTimeout(r, 1200));
+          await refreshArkBalance();
+        }
+      } catch (error) {
+        console.error("Failed to submit match result:", error);
+      }
+    }
+
+    // Close WebSocket connection
+    if (gameClient) {
+      gameClient.close();
+    }
+  };
+
+  /**
+   * Handle opponent's Tic-Tac-Toe move from WebSocket
+   */
+  const handleOpponentTTTMove = (position: number) => {
+    const newBoard = [...tttBoard];
+    const newOpponentMoves = [...opponentMoves];
+
+    // Check if opponent already has 3 pieces
+    if (newOpponentMoves.length >= 3) {
+      const oldestMove = newOpponentMoves.shift()!;
+      newBoard[oldestMove] = null; // Remove oldest piece
+    }
+
+  newBoard[position] = opponentSymbol;
+    newOpponentMoves.push(position);
+
+    setTttBoard(newBoard);
+    setOpponentMoves(newOpponentMoves);
+    setTttCurrentPlayer(playerSymbol);
+    resetTurnTimer();
+
+    // Check for winner
+    const winner = checkTTTWinner(newBoard);
+    if (winner) {
+      handleGameEnd(winner === playerSymbol ? "player" : "opponent");
+    }
+  };
+
+  /**
+   * Handle opponent's Connect Four move from WebSocket
+   */
+  const handleOpponentC4Move = (column: number) => {
+    // Find the lowest empty row in this column
+    let row = -1;
+    for (let r = 5; r >= 0; r--) {
+      if (c4Board[r * 7 + column] === null) {
+        row = r;
+        break;
+      }
+    }
+
+    if (row === -1) return; // Column is full
+
+    setC4DroppingToken({ col: column, row });
+
+    setTimeout(() => {
+      const newBoard = [...c4Board];
+  newBoard[row * 7 + column] = opponentColor;
+      setC4Board(newBoard);
+      setC4DroppingToken(null);
+
+      const winner = checkC4Winner(newBoard);
+      if (winner) {
+        handleGameEnd(winner === playerColor ? "player" : "opponent");
+        return;
+      }
+
+      setC4CurrentPlayer(playerColor);
+      resetTurnTimer();
+    }, 500);
   };
 
   /**
@@ -242,13 +555,24 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
   };
 
   const handleTTTCellClick = (index: number) => {
-    if (tttBoard[index] || tttCurrentPlayer === "O" || fadingCell !== null) return;
+    // Only allow if match started and it's this player's turn
+    if (!started || tttBoard[index] || tttCurrentPlayer !== playerSymbol || fadingCell !== null) return;
+
+    // Multiplayer: send move and wait for authoritative state from server
+    if (opponentType === "player") {
+      if (gameClient) {
+        gameClient.sendMove(index);
+        // Optimistically block further input until state update
+        setTttCurrentPlayer(opponentSymbol);
+      }
+      return;
+    }
 
     const newBoard = [...tttBoard];
     const newPlayerMoves = [...playerMoves];
 
     // Check if player already has 3 pieces
-    if (newPlayerMoves.length >= 3) {
+  if (newPlayerMoves.length >= 3) {
       // Remove oldest piece with animation
       const oldestMove = newPlayerMoves[0];
       setFadingCell(oldestMove);
@@ -256,8 +580,8 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
       // Wait for fade animation, then place new piece
       setTimeout(() => {
         const updatedBoard = [...newBoard];
-        updatedBoard[oldestMove] = null; // Remove oldest
-        updatedBoard[index] = "X"; // Place new
+  updatedBoard[oldestMove] = null; // Remove oldest
+  updatedBoard[index] = playerSymbol; // Place new
         setTttBoard(updatedBoard);
         setFadingCell(null);
         
@@ -268,38 +592,39 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
 
         // Check for win
         const winner = checkTTTWinner(updatedBoard);
-        if (winner === "X") {
+        if (winner === playerSymbol) {
           handleGameEnd("player");
           return;
         }
-
-        // AI's turn
-        setTttCurrentPlayer("O");
+        // Switch turn to opponent; only AI if opponent is AI
+        setTttCurrentPlayer(opponentSymbol);
         resetTurnTimer();
-        makeAIMove(updatedBoard, [...opponentMoves]);
+        if (opponentType === "ai") {
+          makeAIMove(updatedBoard, [...opponentMoves]);
+        }
       }, 400); // Match animation duration
     } else {
       // Place piece normally (first 3 pieces)
-      newBoard[index] = "X";
+      newBoard[index] = playerSymbol;
       setTttBoard(newBoard);
       newPlayerMoves.push(index);
       setPlayerMoves(newPlayerMoves);
 
       // Check for win
       const winner = checkTTTWinner(newBoard);
-      if (winner === "X") {
+      if (winner === playerSymbol) {
         handleGameEnd("player");
         return;
       }
-
-      // AI's turn
-      setTttCurrentPlayer("O");
+      // Switch to opponent's turn; only trigger AI if needed
+      setTttCurrentPlayer(opponentSymbol);
       resetTurnTimer();
-      makeAIMove(newBoard, [...opponentMoves]);
+      if (opponentType === "ai") {
+        makeAIMove(newBoard, [...opponentMoves]);
+      }
     }
 
-    // TODO: Send move to server via WebSocket
-    // ws.send(JSON.stringify({ event: 'move', position: index }));
+    // Multiplayer path handled above
   };
 
   const makeAIMove = (currentBoard: (string | null)[], currentOpponentMoves: number[]) => {
@@ -441,7 +766,7 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
   };
 
   const handleC4ColumnClick = (col: number) => {
-    if (c4CurrentPlayer === "yellow" || c4DroppingToken !== null) return;
+    if (!started || c4CurrentPlayer !== playerColor || c4DroppingToken !== null) return;
     
     const rows = 6;
     const cols = 7;
@@ -458,19 +783,28 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
     
     if (targetRow === -1) return; // Column is full
     
+    if (opponentType === "player") {
+      // Multiplayer: send column to server and optimistically block input until state arrives
+      if (gameClient) {
+        gameClient.sendMove(col);
+        setC4CurrentPlayer(opponentColor);
+      }
+      return;
+    }
+
+    // AI/local mode: animate drop and mutate locally
     // Animate token drop
     setC4DroppingToken({ col, row: targetRow });
-    
     setTimeout(() => {
       const newBoard = [...c4Board];
       const idx = targetRow * cols + col;
-      newBoard[idx] = "red";
+      newBoard[idx] = playerColor;
       setC4Board(newBoard);
       setC4DroppingToken(null);
       
       // Check for win
       const winner = checkC4Winner(newBoard);
-      if (winner === "red") {
+      if (winner === playerColor) {
         handleGameEnd("player");
         return;
       }
@@ -478,7 +812,7 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
       // Check if board is full
       if (newBoard.every(cell => cell !== null)) {
         // Board full, no winner - reset for another round
-        toast.info(`Round ${c4RoundCount} complete! Starting round ${c4RoundCount + 1}...`);
+        console.log(`Round ${c4RoundCount} complete! Starting round ${c4RoundCount + 1}...`);
         setTimeout(() => {
           setC4Board(Array(42).fill(null));
           setC4RoundCount(prev => prev + 1);
@@ -489,12 +823,12 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
       }
       
       // AI's turn
-      setC4CurrentPlayer("yellow");
+      setC4CurrentPlayer(opponentColor);
       resetTurnTimer();
-      makeC4AIMove(newBoard);
-    }, 500); // Drop animation duration
-    
-    // TODO: Send move to server via WebSocket
+      if (opponentType === "ai") {
+        makeC4AIMove(newBoard);
+      }
+    }, 500);
   };
 
   const makeC4AIMove = (currentBoard: (string | null)[]) => {
@@ -546,7 +880,7 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
         // Check if board is full
         if (newBoard.every(cell => cell !== null)) {
           // Board full, no winner - reset for another round
-          toast.info(`Round ${c4RoundCount} complete! Starting round ${c4RoundCount + 1}...`);
+          console.log(`Round ${c4RoundCount} complete! Starting round ${c4RoundCount + 1}...`);
           setTimeout(() => {
             setC4Board(Array(42).fill(null));
             setC4RoundCount(prev => prev + 1);
@@ -589,48 +923,31 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
   };
 
   const handleRPSChoice = (choice: RPSChoice) => {
-    if (rpsWaitingForOpponent || rpsRevealing) return;
-    
+    if (rpsWaitingForOpponent || rpsRevealing || !choice) return;
     setRpsPlayerChoice(choice);
     setRpsWaitingForOpponent(true);
-    
-    // TODO Backend: Send encrypted choice to server
-    // await sendChoice({ choice: encrypt(choice), matchId: {{match_id}} })
-    
-    // Simulate opponent AI choice (replace with real opponent from server)
+    if (opponentType === "player") {
+      // Send to server; reveal handled by rps_reveal event
+      try { gameClient?.sendChoice(choice); } catch {}
+      return;
+    }
+    // AI simulation path
     setTimeout(() => {
       const choices: RPSChoice[] = ["rock", "paper", "scissors"];
       const opponentChoice = choices[Math.floor(Math.random() * 3)];
       setRpsOpponentChoice(opponentChoice);
-      
-      // Reveal animation
       setRpsRevealing(true);
-      
       setTimeout(() => {
-        // Determine round winner
         const result = determineRPSWinner(choice, opponentChoice);
         setRpsRoundResult(result);
-        
-        // Update scores
         let newPlayerScore = rpsPlayerScore;
         let newOpponentScore = rpsOpponentScore;
-        
-        if (result === "win") {
-          newPlayerScore = rpsPlayerScore + 1;
-          setRpsPlayerScore(newPlayerScore);
-        } else if (result === "lose") {
-          newOpponentScore = rpsOpponentScore + 1;
-          setRpsOpponentScore(newOpponentScore);
-        }
-        
-        // Check if match is over (first to 5 wins)
+        if (result === "win") { newPlayerScore = rpsPlayerScore + 1; setRpsPlayerScore(newPlayerScore); }
+        else if (result === "lose") { newOpponentScore = rpsOpponentScore + 1; setRpsOpponentScore(newOpponentScore); }
         setTimeout(() => {
-          if (newPlayerScore >= 5) {
-            handleGameEnd("player");
-          } else if (newOpponentScore >= 5) {
-            handleGameEnd("opponent");
-          } else {
-            // Next round
+          if (newPlayerScore >= 5) handleGameEnd("player");
+          else if (newOpponentScore >= 5) handleGameEnd("opponent");
+          else {
             setRpsCurrentRound(prev => prev + 1);
             setRpsPlayerChoice(null);
             setRpsOpponentChoice(null);
@@ -639,13 +956,15 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
             setRpsWaitingForOpponent(false);
             resetTurnTimer();
           }
-        }, 2500); // Show result for 2.5 seconds
-      }, 1000); // Reveal delay
-    }, 1500); // Opponent "thinking" time
+        }, 2500);
+      }, 1000);
+    }, 1500);
   };
 
   const handleForfeit = () => {
     setShowExitDialog(false);
+    // Inform server so opponent also ends and settlement occurs
+    try { gameClient?.sendForfeit(); } catch {}
     handleGameEnd("opponent");
   };
 
@@ -666,7 +985,14 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
                     </AvatarFallback>
                   </Avatar>
                   <p className="pixel-text text-xs md:text-sm">You</p>
-                  <p className="text-xs text-muted-foreground">{xp} XP</p>
+                  {address && (
+                    <p className="text-xs text-muted-foreground font-mono" title={address}>
+                      {address.substring(0, 6)}...{address.substring(38)}
+                    </p>
+                  )}
+                  {!address && (
+                    <p className="text-xs text-muted-foreground">{xp} XP</p>
+                  )}
                 </div>
 
                 <div className="text-center">
@@ -683,7 +1009,14 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
                     </AvatarFallback>
                   </Avatar>
                   <p className="pixel-text text-xs md:text-sm">{opponentName}</p>
-                  <p className="text-xs text-muted-foreground">{opponentXP} XP</p>
+                  {opponentWallet && opponentType === "player" && (
+                    <p className="text-xs text-muted-foreground font-mono" title={opponentWallet}>
+                      {opponentWallet.substring(0, 6)}...{opponentWallet.substring(38)}
+                    </p>
+                  )}
+                  {opponentType === "ai" && (
+                    <p className="text-xs text-muted-foreground">{opponentXP} XP</p>
+                  )}
                 </div>
               </div>
 
@@ -720,7 +1053,7 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
                     <motion.button
                       key={index}
                       onClick={() => handleTTTCellClick(index)}
-                      disabled={gameState === "finished" || tttCurrentPlayer === "O" || fadingCell !== null}
+                      disabled={gameState === "finished" || !started || tttCurrentPlayer !== playerSymbol || fadingCell !== null}
                       animate={{
                         opacity: fadingCell === index ? 0 : 1,
                         scale: fadingCell === index ? 0.8 : 1,
@@ -730,7 +1063,7 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
                         cell
                           ? "bg-card border-primary/30"
                           : "bg-muted/30 border-border/30 hover:border-primary/50 hover:bg-primary/5"
-                      } ${gameState === "finished" || tttCurrentPlayer === "O" || fadingCell !== null ? "cursor-not-allowed" : "cursor-pointer"}`}
+                      } ${gameState === "finished" || tttCurrentPlayer !== playerSymbol || fadingCell !== null ? "cursor-not-allowed" : "cursor-pointer"}`}
                     >
                       {cell === "X" && <span className="text-primary">X</span>}
                       {cell === "O" && <span className="text-secondary">O</span>}
@@ -741,8 +1074,8 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
                 {/* Turn Indicator */}
                 <div className="mt-4 text-center">
                   <p className="text-xs md:text-sm text-muted-foreground pixel-text">
-                    {gameState === "playing" && tttCurrentPlayer === "X" && "Your turn"}
-                    {gameState === "playing" && tttCurrentPlayer === "O" && "Opponent's turn..."}
+                    {gameState === "playing" && tttCurrentPlayer === playerSymbol && "Your turn"}
+                    {gameState === "playing" && tttCurrentPlayer !== playerSymbol && "Opponent's turn..."}
                   </p>
                 </div>
 
@@ -783,9 +1116,9 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
                           {row === 0 && (
                             <button
                               onClick={() => handleC4ColumnClick(col)}
-                              disabled={gameState === "finished" || c4CurrentPlayer === "yellow" || c4DroppingToken !== null}
+                              disabled={gameState === "finished" || c4CurrentPlayer !== playerColor || c4DroppingToken !== null}
                               className={`absolute inset-0 -top-8 z-10 ${
-                                gameState === "finished" || c4CurrentPlayer === "yellow" || c4DroppingToken !== null
+                                gameState === "finished" || !started || c4CurrentPlayer !== playerColor || c4DroppingToken !== null
                                   ? "cursor-not-allowed"
                                   : "cursor-pointer hover:bg-primary/10 rounded-t-lg"
                               }`}
@@ -837,8 +1170,8 @@ export function GamePage({ game, stakeAmount, playMode, onNavigate }: GamePagePr
                         : "bg-gradient-to-br from-yellow-300 to-yellow-500 animate-pulse"
                     }`} />
                     <p className="text-xs md:text-sm text-muted-foreground pixel-text">
-                      {gameState === "playing" && c4CurrentPlayer === "red" && "Your turn (Red)"}
-                      {gameState === "playing" && c4CurrentPlayer === "yellow" && "Opponent's turn (Yellow)..."}
+                      {gameState === "playing" && c4CurrentPlayer === playerColor && `Your turn (${playerColor === "red" ? "Red" : "Yellow"})`}
+                      {gameState === "playing" && c4CurrentPlayer !== playerColor && `Opponent's turn (${opponentColor === "red" ? "Red" : "Yellow"})...`}
                     </p>
                   </div>
                 </div>
