@@ -1,0 +1,71 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Game {
+  CHESS
+  TTT
+  C4
+  RPS
+}
+
+enum Result {
+  WIN
+  LOSS
+  DRAW
+}
+
+enum Tier {
+  BRONZE
+  SILVER
+  GOLD
+  DIAMOND
+}
+
+model User {
+  id            String   @id @default(cuid())
+  walletAddress String   @unique
+  nickname      String   @default("")
+  avatar        String   @default("")
+  xp            Int      @default(0)
+  tier          Tier     @default(BRONZE)
+  createdAt     DateTime @default(now())
+
+  matchesP1 Match[] @relation("P1")
+  matchesP2 Match[] @relation("P2")
+  badges    Badge[]
+}
+
+model Match {
+  id          String   @id @default(cuid())
+  game        Game
+  p1          User     @relation("P1", fields: [p1Id], references: [id])
+  p1Id        String
+  p2          User     @relation("P2", fields: [p2Id], references: [id])
+  p2Id        String
+  winnerId    String? // null for draw
+  result      Result
+  arkStaked   Int      @default(0)
+  xpWinner    Int      @default(0)
+  xpLoser     Int      @default(0)
+  createdAt   DateTime @default(now())
+  durationSec Int      @default(0)
+  escrowId    BigInt?  // on-chain escrow match ID if provided by P1
+
+  @@index([game, createdAt])
+}
+
+model Badge {
+  id         String   @id @default(cuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  tier       Tier
+  unlockedAt DateTime @default(now())
+
+  @@unique([userId, tier])
+}

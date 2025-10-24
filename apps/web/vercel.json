@@ -1,0 +1,7 @@
+{
+  "framework": "vite",
+  "installCommand": "pnpm -C ../../ i --frozen-lockfile",
+  "buildCommand": "pnpm -C ../../ --filter @spark/web build",
+  "outputDirectory": "build",
+  "cleanUrls": true
+}

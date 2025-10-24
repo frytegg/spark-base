@@ -1,0 +1,6 @@
+
+# Remappings are managed from the parent package at:
+# packages/contracts/remappings.txt
+# This file is intentionally left blank to avoid duplicate remapping
+# that caused imports to resolve to lib/openzeppelin-contracts/lib/openzeppelin-contracts/...
+

@@ -26,12 +26,12 @@ import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Progress } from "../components/ui/progress";
-import { Coins, Trophy, Zap, Award, Sparkles, Gift, Play } from "lucide-react";
+import { Coins, Trophy, Zap, Award, Sparkles, Gift, Play, Loader2 } from "lucide-react";
 import { getTierFromXP } from "../types";
 import { GAMES } from "../config/gameData";
 import { GameCard } from "../components/GameCard";
 import { useWallet } from "../context/WalletContext";
-import { toast } from "sonner@2.0.3";
+import { useEffect, useState } from "react";
 
 interface HomePageProps {
   onNavigate: (screen: string, data?: any) => void;
@@ -40,7 +40,7 @@ interface HomePageProps {
 export function HomePage({ onNavigate }: HomePageProps) {
   // Get user data from wallet context
   // Backend: These values should be fetched from blockchain and backend API
-  const { arkBalance, xp, claimTestTokens, isConnected } = useWallet();
+  const { arkBalance, xp, claimTestTokens, isConnected, isFaucetLoading, faucetError } = useWallet();
   const currentTier = getTierFromXP(xp);
   
   // Calculate unlocked NFTs based on XP
@@ -52,6 +52,23 @@ export function HomePage({ onNavigate }: HomePageProps) {
     { requiredXP: 2000, locked: xp < 2000 },
   ];
   const unlockedNFTs = nftBadgesData.filter(nft => !nft.locked).length;
+  // Active players by game, fetched from backend
+  const [activePlayers, setActivePlayers] = useState<Record<string, number>>({});
+  const API = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
+  useEffect(() => {
+    let mounted = true;
+    const fetchActive = async () => {
+      try {
+        const res = await fetch(`${API}/api/active-players`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (mounted) setActivePlayers(data);
+      } catch {}
+    };
+    fetchActive();
+    const id = setInterval(fetchActive, 15000);
+    return () => { mounted = false; clearInterval(id); };
+  }, [API]);
   
   // Calculate progress to next tier
   const getNextTierXP = (currentXP: number) => {
@@ -79,14 +96,21 @@ export function HomePage({ onNavigate }: HomePageProps) {
     }
   };
 
-  const handleClaimTokens = () => {
+  const handleClaimTokens = async () => {
     if (!isConnected) {
-      toast.error("Please connect your wallet first!");
+      console.error("Please connect your wallet first!");
       return;
     }
-    claimTestTokens();
-    toast.success("Successfully claimed 50 test ARK tokens!");
+    await claimTestTokens();
   };
+
+  // Show error feedback
+  useEffect(() => {
+    if (faucetError) {
+      console.error("Faucet error:", faucetError);
+      // Could show in UI or use a toast library if available
+    }
+  }, [faucetError]);
 
   return (
     <div className="min-h-screen">
@@ -123,11 +147,21 @@ export function HomePage({ onNavigate }: HomePageProps) {
               </Button>
               <Button
                 onClick={handleClaimTokens}
+                disabled={isFaucetLoading || !isConnected}
                 variant="outline"
-                className="border-2 border-accent/50 hover:bg-accent/10 pixel-text text-xs h-11 md:h-12 px-6 md:px-8 w-full sm:w-auto"
+                className="border-2 border-accent/50 hover:bg-accent/10 pixel-text text-xs h-11 md:h-12 px-6 md:px-8 w-full sm:w-auto disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <Gift className="w-3.5 md:w-4 h-3.5 md:h-4 mr-2" />
-                Claim Test Token
+                {isFaucetLoading ? (
+                  <>
+                    <Loader2 className="w-3.5 md:w-4 h-3.5 md:h-4 mr-2 animate-spin" />
+                    Claiming...
+                  </>
+                ) : (
+                  <>
+                    <Gift className="w-3.5 md:w-4 h-3.5 md:h-4 mr-2" />
+                    Claim Test Token
+                  </>
+                )}
               </Button>
             </div>
           </div>
@@ -227,7 +261,7 @@ export function HomePage({ onNavigate }: HomePageProps) {
             {GAMES.map((game) => (
               <GameCard
                 key={game.id}
-                game={game}
+                game={{ ...game, players: activePlayers[game.id] ?? game.players }}
                 onPlay={() => onNavigate("lobby", { game })}
               />
             ))}

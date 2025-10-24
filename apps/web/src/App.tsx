@@ -16,6 +16,7 @@
 
 import { useState } from "react";
 import { Header } from "./components/Header";
+import { NetworkBanner } from "./components/NetworkBanner";
 import { HomePage } from "./pages/HomePage";
 import { LobbyPage } from "./pages/LobbyPage";
 import { GamePage } from "./pages/GamePage";
@@ -40,6 +41,11 @@ export default function App() {
     <WalletProvider>
       <div className="min-h-screen bg-background text-foreground">
         <Header onNavigate={handleNavigate} currentScreen={currentScreen} />
+        
+        {/* Network validation banner */}
+        <div className="container mx-auto px-4 pt-4">
+          <NetworkBanner />
+        </div>
 
         <main>
           {currentScreen === "landing" && <HomePage onNavigate={handleNavigate} />}
@@ -54,6 +60,11 @@ export default function App() {
               stakeAmount={navData.stakeAmount || 0}
               playMode={navData.playMode || "free"}
               onNavigate={handleNavigate}
+              opponentType={navData.opponentType}
+              matchId={navData.matchId}
+              escrowId={navData.escrowId}
+              opponentWallet={navData.opponentWallet}
+              role={navData.role}
             />
           )}
           

@@ -39,7 +39,7 @@
  * ============================================================================
  */
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -47,6 +47,9 @@ import { Input } from "../components/ui/input";
 import { Coins, ArrowLeft, Loader2, Users, Info } from "lucide-react";
 import { Game } from "../types";
 import { useWallet } from "../context/WalletContext";
+import { useAccount } from "wagmi";
+import { useApproveArk, useCreateMatch, useJoinMatch } from "../lib/hooks";
+import { stakeAndQueue } from "../lib/matchClient";
 import { motion } from "motion/react";
 import {
   ChessIllustration,
@@ -54,6 +57,7 @@ import {
   ConnectFourIllustration,
   RockPaperScissorsIllustration,
 } from "../components/ArcadeIllustrations";
+import { StakePlay } from "../features/lobby/StakePlay";
 
 interface LobbyPageProps {
   game: Game;
@@ -69,72 +73,215 @@ const illustrationMap = {
 
 export function LobbyPage({ game, onNavigate }: LobbyPageProps) {
   const [playMode, setPlayMode] = useState<"free" | "stake">("free");
-  const [stakeAmount, setStakeAmount] = useState(50);
+  const [stakeAmount, setStakeAmount] = useState(1);
   const [isMatchmaking, setIsMatchmaking] = useState(false);
   const [matchmakingMode, setMatchmakingMode] = useState<"multiplayer" | "ai" | null>(null);
   const [matchmakingFailed, setMatchmakingFailed] = useState(false);
   const { arkBalance, xp } = useWallet();
+  const { address } = useAccount();
+  const approveArk = useApproveArk();
+  const createMatch = useCreateMatch();
+  const joinMatch = useJoinMatch();
+  const wsRef = useRef<WebSocket | null>(null);
 
   const Illustration = illustrationMap[game.illustration as keyof typeof illustrationMap];
+  
+  // WebSocket URL from environment - convert http to ws
+  const apiUrl = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
+  const wsUrl = apiUrl.replace("http", "ws");
+  
+  // Cleanup WebSocket on unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, []);
 
   /**
    * Start matchmaking
-   * Backend: POST /api/matchmaking/join
+   * For stake mode: Calls smart contract approve + createMatch, then sends WebSocket join
+   * For free mode: Sends WebSocket join directly
    * WebSocket: Listen for match_found or match_timeout events
    */
-  const handleStartMatch = (mode: "multiplayer" | "ai") => {
+  const handleStartMatch = async (mode: "multiplayer" | "ai") => {
     setMatchmakingMode(mode);
     setIsMatchmaking(true);
     setMatchmakingFailed(false);
     
-    // TODO: Replace with real matchmaking
-    // Example WebSocket implementation:
-    // const ws = new WebSocket('ws://your-server/matchmaking');
-    // ws.send(JSON.stringify({
-    //   action: 'join',
-    //   gameId: game.id,
-    //   playMode,
-    //   stakeAmount: playMode === 'stake' ? stakeAmount : 0,
-    //   playerXP: xp
-    // }));
-    // ws.onmessage = (event) => {
-    //   const data = JSON.parse(event.data);
-    //   if (data.event === 'match_found') {
-    //     onNavigate('gameplay', { ... });
-    //   }
-    // };
-    
-    if (mode === "ai") {
-      // MOCK: AI match always succeeds quickly
-      setTimeout(() => {
-        onNavigate("gameplay", { 
-          game, 
-          stakeAmount: playMode === "stake" ? stakeAmount : 0,
-          playMode,
-          opponentType: "ai",
-          opponentXP: xp // Backend: Get from AI opponent API
-        });
-      }, 1500);
-    } else {
-      // MOCK: Multiplayer matchmaking simulation
-      // Backend: Real implementation should use WebSocket
-      const foundMatch = Math.random() > 0.5;
-      
-      if (foundMatch) {
-        setTimeout(() => {
-          onNavigate("gameplay", { 
-            game, 
-            stakeAmount: playMode === "stake" ? stakeAmount : 0,
-            playMode,
-            opponentType: "player"
-            // Backend: Include opponent details from matchmaking
+    try {
+      if (mode === "ai") {
+        // AI mode - simpler flow, no multiplayer matchmaking needed
+        if (playMode === "stake") {
+          // For stake mode with AI, still need to create escrow
+          if (!address) {
+            throw new Error("Wallet not connected");
+          }
+          
+          // Connect WebSocket for AI stake mode
+          const ws = new WebSocket(`${wsUrl}/matchmaking`);
+          wsRef.current = ws;
+          
+          // Wait for WebSocket to connect
+          await new Promise<void>((resolve, reject) => {
+            ws.onopen = () => resolve();
+            ws.onerror = () => reject(new Error("WebSocket connection failed"));
+            setTimeout(() => reject(new Error("WebSocket timeout")), 5000);
           });
-        }, 2500);
+          
+          // Call stakeAndQueue to handle approve + createMatch + join
+          await stakeAndQueue(
+            stakeAmount.toString(),
+            address,
+            ws,
+            approveArk,
+            createMatch
+          );
+          
+          // For AI, we can navigate immediately after stake
+          setTimeout(() => {
+            onNavigate("gameplay", { 
+              game, 
+              stakeAmount,
+              playMode,
+              opponentType: "ai",
+              opponentXP: xp
+            });
+          }, 1500);
+        } else {
+          // Free play AI - no blockchain interaction needed
+          setTimeout(() => {
+            onNavigate("gameplay", { 
+              game, 
+              stakeAmount: 0,
+              playMode,
+              opponentType: "ai",
+              opponentXP: xp
+            });
+          }, 1500);
+        }
       } else {
-        setTimeout(() => {
+        // Multiplayer mode - real matchmaking via WebSocket
+        if (!address) {
+          throw new Error("Wallet not connected");
+        }
+        
+        // Connect WebSocket
+        const ws = new WebSocket(`${wsUrl}/matchmaking`);
+        wsRef.current = ws;
+        
+        // Setup WebSocket event handlers
+        ws.onopen = async () => {
+          console.log("WebSocket connected to matchmaking");
+          
+          if (playMode === "stake") {
+            // Stake mode: approve + createMatch + send join with escrowId
+            try {
+              await stakeAndQueue(
+                stakeAmount.toString(),
+                address,
+                ws,
+                approveArk,
+                createMatch
+              );
+            } catch (error) {
+              console.error("Stake and queue failed:", error);
+              setIsMatchmaking(false);
+              setMatchmakingFailed(true);
+              ws.close();
+            }
+          } else {
+            // Free mode: just send join message
+            ws.send(JSON.stringify({
+              action: "join",
+              wallet: address,
+              gameId: game.id,
+              playMode: "free",
+              stakeAmount: 0,
+              playerXP: xp
+            }));
+          }
+        };
+        
+        ws.onmessage = async (event) => {
+          const msg = JSON.parse(event.data);
+          console.log("WebSocket message:", msg);
+          
+          if (msg.event === "match_found") {
+            try {
+              const { matchId, escrowId, opponentWallet, role } = msg.data;
+              
+              // P1 informs backend to start the match
+              if (role === "p1") {
+                await fetch(`${apiUrl}/api/match/start`, {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({
+                    p1Wallet: address,
+                    p2Wallet: opponentWallet,
+                    gameId: game.id,
+                    stakeAmount: playMode === "stake" ? Number(stakeAmount) : 0,
+                    escrowId: escrowId ? BigInt(escrowId).toString() : null
+                  })
+                });
+              }
+              
+              // P2 joins on-chain if escrowId is present
+              if (role === "p2" && escrowId) {
+                try {
+                  await joinMatch(BigInt(escrowId));
+                  console.log("P2 joined match on-chain:", escrowId);
+                } catch (error) {
+                  console.error("Failed to join match on-chain:", error);
+                  // Continue anyway - backend can handle this
+                }
+              }
+              
+              // Navigate to game page
+              onNavigate("gameplay", { 
+                game, 
+                stakeAmount: playMode === "stake" ? stakeAmount : 0,
+                playMode,
+                opponentType: "player",
+                matchId,
+                escrowId,
+                opponentWallet,
+                role
+              });
+            } catch (error) {
+              console.error("Error handling match_found:", error);
+              setIsMatchmaking(false);
+              setMatchmakingFailed(true);
+            }
+          } else if (msg.event === "match_timeout" || msg.type === "error") {
+            setIsMatchmaking(false);
+            setMatchmakingFailed(true);
+          }
+        };
+        
+        ws.onerror = (error) => {
+          console.error("WebSocket error:", error);
           setIsMatchmaking(false);
           setMatchmakingFailed(true);
-        }, 3500);
+        };
+        
+        ws.onclose = () => {
+          console.log("WebSocket closed");
+          if (isMatchmaking) {
+            setIsMatchmaking(false);
+            setMatchmakingFailed(true);
+          }
+        };
+      }
+    } catch (error) {
+      console.error("Error starting match:", error);
+      setIsMatchmaking(false);
+      setMatchmakingFailed(true);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
       }
     }
   };
@@ -189,17 +336,7 @@ export function LobbyPage({ game, onNavigate }: LobbyPageProps) {
                       {/* Backend: Real-time player count */}
                     </span>
                   </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground">ARK Reward</span>
-                    <span className="pixel-text text-accent flex items-center gap-1.5">
-                      <Coins className="w-3.5 h-3.5" />
-                      {game.arkReward}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground">NFT Reward</span>
-                    <span className="pixel-text text-secondary">{game.nftReward}</span>
-                  </div>
+                  {/* Removed ARK Reward and NFT Reward display as requested */}
                 </div>
 
                 {/* Game Rules */}
@@ -239,6 +376,7 @@ export function LobbyPage({ game, onNavigate }: LobbyPageProps) {
                   <Button
                     variant={playMode === "free" ? "default" : "outline"}
                     onClick={() => setPlayMode("free")}
+                    disabled={isMatchmaking}
                     className={`pixel-text text-xs h-auto py-4 ${
                       playMode === "free" ? "bg-gradient-to-r from-primary to-secondary" : ""
                     }`}
@@ -251,6 +389,7 @@ export function LobbyPage({ game, onNavigate }: LobbyPageProps) {
                   <Button
                     variant={playMode === "stake" ? "default" : "outline"}
                     onClick={() => setPlayMode("stake")}
+                    disabled={isMatchmaking}
                     className={`pixel-text text-xs h-auto py-4 ${
                       playMode === "stake" ? "bg-gradient-to-r from-accent to-secondary" : ""
                     }`}
@@ -273,11 +412,13 @@ export function LobbyPage({ game, onNavigate }: LobbyPageProps) {
                       <Coins className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                       <Input
                         type="number"
+                        step="0.1"
                         value={stakeAmount}
-                        onChange={(e) => setStakeAmount(Math.max(1, parseInt(e.target.value) || 0))}
+                        onChange={(e) => setStakeAmount(Math.max(0.1, parseFloat(e.target.value) || 0))}
                         className="pl-10 pixel-text"
-                        min={1}
+                        min={0.1}
                         max={arkBalance}
+                        disabled={isMatchmaking}
                       />
                     </div>
                     <div className="flex justify-between text-xs">
@@ -302,17 +443,39 @@ export function LobbyPage({ game, onNavigate }: LobbyPageProps) {
                 {/* Matchmaking Buttons */}
                 {!isMatchmaking && !matchmakingFailed && (
                   <div className="space-y-3">
-                    <Button
-                      onClick={() => handleStartMatch("multiplayer")}
-                      disabled={playMode === "stake" && !canAffordStake}
-                      className="w-full bg-gradient-to-r from-primary via-secondary to-accent hover:from-primary/90 hover:via-secondary/90 hover:to-accent/90 pixel-text text-xs h-11 md:h-12"
-                    >
-                      <Users className="w-4 h-4 mr-2" />
-                      Find Multiplayer Match
-                    </Button>
+                    {playMode === "stake" ? (
+                      // Use StakePlay component for stake mode multiplayer
+                      <StakePlay
+                        stake={stakeAmount.toString()}
+                        gameId={game.id}
+                        onMatchFound={(data) => {
+                          // Navigate to game page with match data
+                          onNavigate("gameplay", {
+                            game,
+                            stakeAmount,
+                            playMode,
+                            opponentType: "player",
+                            matchId: data.matchId,
+                            escrowId: data.escrowId,
+                            opponentWallet: data.opponentWallet,
+                            role: data.role
+                          });
+                        }}
+                      />
+                    ) : (
+                      // Free mode multiplayer - use existing button
+                      <Button
+                        onClick={() => handleStartMatch("multiplayer")}
+                        disabled={isMatchmaking}
+                        className="w-full bg-gradient-to-r from-primary via-secondary to-accent hover:from-primary/90 hover:via-secondary/90 hover:to-accent/90 pixel-text text-xs h-11 md:h-12"
+                      >
+                        <Users className="w-4 h-4 mr-2" />
+                        Find Multiplayer Match
+                      </Button>
+                    )}
                     <Button
                       onClick={() => handleStartMatch("ai")}
-                      disabled={playMode === "stake" && !canAffordStake}
+                      disabled={isMatchmaking || (playMode === "stake" && !canAffordStake)}
                       variant="outline"
                       className="w-full border-2 border-secondary/50 hover:bg-secondary/10 pixel-text text-xs h-11 md:h-12"
                     >

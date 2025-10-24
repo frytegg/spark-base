@@ -60,6 +60,12 @@ export interface NavigationData {
   game?: Game;
   stakeAmount?: number;
   playMode?: "free" | "stake";
+  // Multiplayer navigation context
+  opponentType?: "player" | "ai";
+  matchId?: string;
+  escrowId?: string;
+  opponentWallet?: string;
+  role?: "p1" | "p2";
 }
 
 // ============================================================================

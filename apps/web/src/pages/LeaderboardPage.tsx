@@ -35,7 +35,7 @@
  * ============================================================================
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -60,14 +60,38 @@ interface LeaderboardPlayer {
 export function LeaderboardPage({ onNavigate }: LeaderboardPageProps) {
   const [timeFilter, setTimeFilter] = useState<"daily" | "weekly" | "alltime">("alltime");
   const { isConnected, xp, nickname, walletAddress } = useWallet();
+  const [sortedPlayers, setSortedPlayers] = useState<LeaderboardPlayer[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // TODO: Replace with actual API call
-  // Example: const { data: players } = useQuery(['leaderboard', timeFilter], () => 
-  //   fetch(`/api/leaderboard?timeFilter=${timeFilter}`).then(r => r.json())
-  // );
-  
-  // PLACEHOLDER: Empty leaderboard - populate from backend
-  const sortedPlayers: LeaderboardPlayer[] = [];
+  const API = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
+
+  // Fetch leaderboard data from backend
+  useEffect(() => {
+    const fetchLeaderboard = async () => {
+      setIsLoading(true);
+      setError(null);
+      
+      try {
+        const response = await fetch(`${API}/api/leaderboard?timeFilter=${timeFilter}`);
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch leaderboard: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        setSortedPlayers(data);
+      } catch (err) {
+        console.error("Error fetching leaderboard:", err);
+        setError(err instanceof Error ? err.message : "Failed to load leaderboard");
+        setSortedPlayers([]);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchLeaderboard();
+  }, [timeFilter, API]);
 
   const getRankIcon = (rank: number) => {
     if (rank === 1) return <Crown className="w-6 h-6 text-yellow-400" />;
@@ -137,7 +161,36 @@ export function LeaderboardPage({ onNavigate }: LeaderboardPageProps) {
           </div>
 
           {/* Empty State / Placeholder */}
-          {sortedPlayers.length === 0 && (
+          {isLoading && (
+            <Card className="p-12 text-center bg-card/30 border-border/30">
+              <div className="space-y-4">
+                <Trophy className="w-16 h-16 mx-auto text-muted-foreground/30 animate-pulse" />
+                <div>
+                  <h3 className="text-lg pixel-text text-muted-foreground mb-2">
+                    Loading Rankings...
+                  </h3>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {!isLoading && error && (
+            <Card className="p-12 text-center bg-card/30 border-border/30">
+              <div className="space-y-4">
+                <Trophy className="w-16 h-16 mx-auto text-red-400/30" />
+                <div>
+                  <h3 className="text-lg pixel-text text-red-400 mb-2">
+                    Error Loading Leaderboard
+                  </h3>
+                  <p className="text-xs text-muted-foreground/70">
+                    {error}
+                  </p>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {!isLoading && !error && sortedPlayers.length === 0 && (
             <Card className="p-12 text-center bg-card/30 border-border/30">
               <div className="space-y-4">
                 <Trophy className="w-16 h-16 mx-auto text-muted-foreground/30" />
@@ -146,10 +199,7 @@ export function LeaderboardPage({ onNavigate }: LeaderboardPageProps) {
                     No Rankings Available
                   </h3>
                   <p className="text-xs text-muted-foreground/70">
-                    Backend Integration Required
-                  </p>
-                  <p className="text-xs text-muted-foreground/50 mt-2">
-                    Connect to: GET /api/leaderboard?timeFilter={timeFilter}
+                    Be the first to play and climb the leaderboard!
                   </p>
                 </div>
               </div>
