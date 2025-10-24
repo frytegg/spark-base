@@ -1,5 +1,4 @@
 {
   "installCommand": "pnpm -C ../../ i --frozen-lockfile",
   "buildCommand": "pnpm -C ../../ --filter @spark/api build",
-  "startCommand": "node dist/index.js"
 }
