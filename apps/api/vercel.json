@@ -1,4 +1,4 @@
 {
-  "installCommand": "pnpm -C ../../ i --frozen-lockfile",
-  "buildCommand": "pnpm -C ../../ --filter @spark/api build",
+  "buildCommand": "cd ../../ && pnpm i --frozen-lockfile && pnpm --filter @spark/api build",
+  "outputDirectory": "apps/api/dist"
 }
