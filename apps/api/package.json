@@ -16,7 +16,6 @@
     "@fastify/cors": "^8.0.0",
     "@fastify/helmet": "^11.0.0",
     "@fastify/websocket": "^7.2.0",
-    "@spark/shared": "workspace:*",
     "abitype": "^1.1.1",
     "dotenv": "^17.2.3",
     "fastify": "^4.28.1",
